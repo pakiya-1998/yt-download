@@ -1,235 +1,429 @@
 import streamlit as st
-from pathlib import Path
-import tempfile
-import time
+import requests
 import re
+import json
+from urllib.parse import urljoin
+from http.cookiejar import Cookie
+from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="AMP4 Cookie Test", page_icon="🧪")
+st.set_page_config(
+    page_title="AMP4 HTTP Cookie Test",
+    page_icon="🧪",
+    layout="centered"
+)
 
-st.title("🧪 AMP4 Cookie Test")
+st.title("🧪 AMP4 HTTP Cookie Test")
+
 st.warning(
-    "Use this only for videos you are authorized to download and only for personal/noncommercial "
-    "testing where AMP4 permits automated use. Do not paste cookie values into chat."
+    "Use this only for videos you are authorized to download and where "
+    "AMP4 permits the intended use. Never paste cookie values into chat."
 )
 
-st.markdown("""
-This test loads **your own AMP4 cookies.txt locally** and opens AMP4 in a browser session.
-It does **not** bypass CAPTCHA, anti-bot checks, or YouTube restrictions.
-""")
-
-cookie_file = st.file_uploader(
-    "Upload AMP4 cookies.txt (Netscape format)",
-    type=["txt", "cookies"],
+st.write(
+    "This version does NOT use Playwright, Selenium, Chromium, or browser drivers."
 )
 
-url = st.text_input(
+# ---------------------------------------------------------
+# COOKIE PARSER
+# ---------------------------------------------------------
+
+def load_netscape_cookies(uploaded_file):
+    raw = uploaded_file.getvalue().decode("utf-8", errors="replace")
+
+    session = requests.Session()
+
+    count = 0
+
+    for line in raw.splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
+            continue
+
+        line = line.replace("#HttpOnly_", "", 1)
+
+        parts = line.split("\t")
+
+        if len(parts) != 7:
+            continue
+
+        domain = parts[0]
+        include_subdomains = parts[1]
+        path = parts[2]
+        secure = parts[3]
+        expires = parts[4]
+        name = parts[5]
+        value = parts[6]
+
+        if not domain:
+            continue
+
+        # Only AMP4 cookies
+        if "amp4.cc" not in domain.lower():
+            continue
+
+        try:
+            expires_int = int(expires)
+        except Exception:
+            expires_int = 0
+
+        cookie = Cookie(
+            version=0,
+            name=name,
+            value=value,
+            port=None,
+            port_specified=False,
+            domain=domain,
+            domain_specified=True,
+            domain_initial_dot=domain.startswith("."),
+            path=path or "/",
+            path_specified=True,
+            secure=secure.upper() == "TRUE",
+            expires=expires_int if expires_int > 0 else None,
+            discard=False,
+            comment=None,
+            comment_url=None,
+            rest={},
+            rfc2109=False,
+        )
+
+        session.cookies.set_cookie(cookie)
+
+        count += 1
+
+    return session, count
+
+
+# ---------------------------------------------------------
+# AMP4 PAGE
+# ---------------------------------------------------------
+
+def get_amp4_page(session):
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/153.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;"
+            "q=0.9,image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://amp4.cc/",
+    }
+
+    response = session.get(
+        "https://amp4.cc/",
+        headers=headers,
+        timeout=30,
+        allow_redirects=True
+    )
+
+    return response
+
+
+# ---------------------------------------------------------
+# FIND POSSIBLE API ENDPOINTS
+# ---------------------------------------------------------
+
+def find_endpoints(html):
+
+    endpoints = set()
+
+    # Absolute URLs
+    absolute = re.findall(
+        r'https?://[^"\']+',
+        html
+    )
+
+    for item in absolute:
+        if "amp4.cc" in item:
+            endpoints.add(item)
+
+    # Relative API-looking paths
+    relative = re.findall(
+        r'["\'](\/(?:api|ajax|convert|download|youtube|process|convert-url)[^"\']*)["\']',
+        html,
+        flags=re.I
+    )
+
+    for item in relative:
+        endpoints.add(urljoin("https://amp4.cc/", item))
+
+    return sorted(endpoints)
+
+
+# ---------------------------------------------------------
+# FIND FORMS
+# ---------------------------------------------------------
+
+def inspect_forms(html):
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    forms = []
+
+    for form in soup.find_all("form"):
+
+        action = form.get("action") or "/"
+        method = (form.get("method") or "GET").upper()
+
+        fields = []
+
+        for inp in form.find_all(["input", "select", "textarea"]):
+
+            name = inp.get("name")
+
+            if name:
+                fields.append({
+                    "name": name,
+                    "type": inp.get("type", ""),
+                    "value_present": bool(inp.get("value"))
+                })
+
+        forms.append({
+            "action": urljoin("https://amp4.cc/", action),
+            "method": method,
+            "fields": fields
+        })
+
+    return forms
+
+
+# ---------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------
+
+cookies_file = st.file_uploader(
+    "Upload AMP4 cookies.txt",
+    type=["txt", "cookies"]
+)
+
+youtube_url = st.text_input(
     "YouTube URL",
     placeholder="https://www.youtube.com/watch?v=..."
 )
 
-headless = st.checkbox("Run browser headless", value=True)
+if st.button("🚀 Test AMP4", type="primary"):
 
-def parse_netscape_cookies(raw: str):
-    cookies = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("\t")
-        if len(parts) != 7:
-            continue
+    if not cookies_file:
+        st.error("Please upload your AMP4 cookies.txt")
+        st.stop()
 
-        domain, include_subdomains, path, secure, expires, name, value = parts
-        domain = domain.lstrip(".")
-        try:
-            expires_num = int(float(expires))
-        except Exception:
-            expires_num = 0
+    if not youtube_url.strip():
+        st.error("Please enter a YouTube URL")
+        st.stop()
 
-        item = {
-            "name": name,
-            "value": value,
-            "domain": "." + domain if not domain.startswith(".") else domain,
-            "path": path or "/",
-        }
-        if secure.upper() == "TRUE":
-            item["secure"] = True
-        if expires_num > 0:
-            item["expires"] = expires_num
-        cookies.append(item)
-
-    return cookies
-
-def run_test(cookie_bytes: bytes, youtube_url: str, is_headless: bool):
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        st.error(
-            "Playwright package is not installed in this deployment. "
-            "Make sure requirements.txt contains playwright>=1.50,<2 and redeploy/reboot the app."
+
+        # -------------------------------------------------
+        # LOAD COOKIES
+        # -------------------------------------------------
+
+        session, cookie_count = load_netscape_cookies(
+            cookies_file
         )
-        st.code(f"Import error: {exc}")
+
         st.info(
-            "If you already committed requirements.txt, Streamlit Cloud needs to rebuild the "
-            "environment before Playwright becomes available."
-        )
-        return
-
-    raw = cookie_bytes.decode("utf-8", errors="replace")
-    cookies = parse_netscape_cookies(raw)
-
-    if not cookies:
-        st.error("No valid Netscape cookies were found.")
-        return
-
-    amp4_cookies = [
-        c for c in cookies
-        if "amp4.cc" in c.get("domain", "")
-    ]
-
-    if not amp4_cookies:
-        st.warning(
-            "No amp4.cc cookies were found in the uploaded file. "
-            "The file may contain cookies for another domain."
+            f"Loaded {cookie_count} AMP4 cookies locally."
         )
 
-    # Never display cookie names/values.
-    st.write(f"Loaded {len(amp4_cookies)} AMP4 cookie entries locally.")
+        # -------------------------------------------------
+        # OPEN AMP4
+        # -------------------------------------------------
 
-    with sync_playwright() as p:
-        # Prefer Streamlit Cloud / Linux system Chromium when available.
-        # Otherwise Playwright's bundled Chromium is used.
-        chromium_candidates = [
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
+        with st.spinner("Connecting to AMP4..."):
+
+            response = get_amp4_page(session)
+
+        st.write("### 1. AMP4 Connection")
+
+        if response.status_code == 200:
+            st.success(
+                f"AMP4 connection OK — HTTP {response.status_code}"
+            )
+        else:
+            st.error(
+                f"AMP4 returned HTTP {response.status_code}"
+            )
+
+        st.write(
+            "Final URL:",
+            response.url
+        )
+
+        # -------------------------------------------------
+        # CHECK PAGE
+        # -------------------------------------------------
+
+        html = response.text
+
+        st.write("### 2. AMP4 Page Analysis")
+
+        if "youtube" in html.lower():
+            st.success(
+                "YouTube converter interface detected."
+            )
+        else:
+            st.warning(
+                "YouTube converter interface was not clearly detected."
+            )
+
+        # -------------------------------------------------
+        # CHECK FOR CAPTCHA
+        # -------------------------------------------------
+
+        lower_html = html.lower()
+
+        captcha_words = [
+            "captcha",
+            "recaptcha",
+            "hcaptcha",
+            "cloudflare"
         ]
-        executable = next((x for x in chromium_candidates if Path(x).exists()), None)
 
-        launch_kwargs = {"headless": is_headless}
-        if executable:
-            launch_kwargs["executable_path"] = executable
+        detected = [
+            x for x in captcha_words
+            if x in lower_html
+        ]
 
-        browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
-            accept_downloads=True,
-            ignore_https_errors=False,
+        if detected:
+
+            st.warning(
+                "Anti-bot/CAPTCHA related content detected: "
+                + ", ".join(detected)
+            )
+
+            st.info(
+                "This test does not bypass CAPTCHA or anti-bot protection."
+            )
+
+        # -------------------------------------------------
+        # FIND FORMS
+        # -------------------------------------------------
+
+        forms = inspect_forms(html)
+
+        st.write("### 3. HTML Forms")
+
+        if forms:
+
+            for i, form in enumerate(forms, 1):
+
+                with st.expander(
+                    f"Form {i}"
+                ):
+
+                    st.write(
+                        "Action:",
+                        form["action"]
+                    )
+
+                    st.write(
+                        "Method:",
+                        form["method"]
+                    )
+
+                    st.json(
+                        form["fields"]
+                    )
+
+        else:
+
+            st.info(
+                "No normal HTML form detected."
+            )
+
+        # -------------------------------------------------
+        # FIND POSSIBLE API ENDPOINTS
+        # -------------------------------------------------
+
+        endpoints = find_endpoints(html)
+
+        st.write("### 4. Possible AMP4 endpoints")
+
+        if endpoints:
+
+            for endpoint in endpoints:
+
+                # Do not expose cookie values.
+                st.code(endpoint)
+
+        else:
+
+            st.info(
+                "No obvious API/conversion endpoint was found "
+                "in the initial HTML."
+            )
+
+        # -------------------------------------------------
+        # SEARCH JAVASCRIPT
+        # -------------------------------------------------
+
+        soup = BeautifulSoup(
+            html,
+            "html.parser"
         )
 
-        # Only inject AMP4 cookies; never send unrelated cookies to AMP4.
-        if amp4_cookies:
-            context.add_cookies(amp4_cookies)
+        scripts = []
 
-        page = context.new_page()
+        for script in soup.find_all("script", src=True):
 
-        status = st.empty()
-        status.info("Opening AMP4…")
-        page.goto("https://amp4.cc/", wait_until="domcontentloaded", timeout=60000)
+            src = urljoin(
+                response.url,
+                script.get("src")
+            )
 
-        status.info("AMP4 opened. Checking session/cookie state…")
-        time.sleep(2)
+            scripts.append(src)
 
-        title = page.title()
-        current_url = page.url
+        st.write("### 5. JavaScript files")
 
-        st.success("AMP4 page opened.")
-        st.write("Page title:", title)
-        st.write("Current URL:", current_url)
+        if scripts:
 
-        if youtube_url:
-            status.info("Submitting the YouTube URL…")
+            st.write(
+                f"Detected {len(scripts)} JavaScript files."
+            )
 
-            # AMP4 currently exposes a YouTube URL input on the page.
-            inputs = page.locator("input")
-            target = None
+            for src in scripts[:20]:
 
-            for i in range(min(inputs.count(), 20)):
-                el = inputs.nth(i)
-                try:
-                    ph = (el.get_attribute("placeholder") or "").lower()
-                    typ = (el.get_attribute("type") or "").lower()
-                    value = (el.get_attribute("value") or "").lower()
-                    if (
-                        "youtube" in ph
-                        or "url" in ph
-                        or typ == "url"
-                        or "youtube.com" in value
-                    ):
-                        target = el
-                        break
-                except Exception:
-                    pass
+                st.code(src)
 
-            if target is None and inputs.count() > 0:
-                target = inputs.nth(0)
+        else:
 
-            if target is None:
-                st.error("Could not identify the AMP4 URL input.")
-            else:
-                target.fill(youtube_url)
+            st.info(
+                "No external JavaScript files detected."
+            )
 
-                # Find a likely download/submit button.
-                buttons = page.get_by_role("button")
-                clicked = False
+        # -------------------------------------------------
+        # IMPORTANT RESULT
+        # -------------------------------------------------
 
-                for i in range(min(buttons.count(), 30)):
-                    b = buttons.nth(i)
-                    try:
-                        txt = (b.inner_text() or "").strip().lower()
-                        if any(x in txt for x in ["download", "convert", "start"]):
-                            b.click()
-                            clicked = True
-                            break
-                    except Exception:
-                        pass
+        st.write("### 6. Result")
 
-                if not clicked:
-                    st.warning(
-                        "URL was filled, but no download/convert button was identified automatically. "
-                        "You can use the opened browser manually."
-                    )
-                else:
-                    status.info("AMP4 conversion request submitted. Waiting for response…")
+        st.success(
+            "AMP4 HTTP session test completed."
+        )
 
-                    # Do not try to bypass CAPTCHA. Just observe normal page state.
-                    deadline = time.time() + 90
-                    while time.time() < deadline:
-                        time.sleep(2)
-                        txt = page.locator("body").inner_text().lower()
+        st.info(
+            "If AMP4 requires a JavaScript-generated API request, "
+            "this HTTP-only version will show the page/endpoints "
+            "but will not bypass browser/anti-bot protections."
+        )
 
-                        if "captcha" in txt:
-                            st.warning(
-                                "AMP4 requested a CAPTCHA. The test will not bypass it."
-                            )
-                            break
+    except requests.RequestException as e:
 
-                        if "conversion failed" in txt or "failed" in txt:
-                            st.error("AMP4 reported a conversion failure.")
-                            break
+        st.error(
+            f"Network error: {e}"
+        )
 
-                        if "download" in txt and (
-                            "completed" in txt or "ready" in txt
-                        ):
-                            st.success("AMP4 appears to have completed the conversion.")
-                            break
-                    else:
-                        st.info(
-                            "No final result detected within 90 seconds. "
-                            "AMP4 may still be processing or may have changed its page flow."
-                        )
+    except Exception as e:
 
-        # Save a screenshot without exposing cookie values.
-        screenshot_path = Path(tempfile.gettempdir()) / "amp4_test.png"
-        page.screenshot(path=str(screenshot_path), full_page=False)
-        st.image(str(screenshot_path), caption="AMP4 test page")
-
-        browser.close()
-
-if st.button("🚀 Test AMP4 with Cookies", type="primary"):
-    if not cookie_file:
-        st.error("Please upload your own AMP4 cookies.txt.")
-    elif not url.strip():
-        st.error("Please enter a YouTube URL.")
-    else:
-        run_test(cookie_file.getvalue(), url.strip(), headless)
+        st.error(
+            f"Unexpected error: {e}"
+        )
