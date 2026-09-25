@@ -89,7 +89,21 @@ def run_test(cookie_bytes: bytes, youtube_url: str, is_headless: bool):
     st.write(f"Loaded {len(amp4_cookies)} AMP4 cookie entries locally.")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=is_headless)
+        # Prefer Streamlit Cloud / Linux system Chromium when available.
+        # Otherwise Playwright's bundled Chromium is used.
+        chromium_candidates = [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+        ]
+        executable = next((x for x in chromium_candidates if Path(x).exists()), None)
+
+        launch_kwargs = {"headless": is_headless}
+        if executable:
+            launch_kwargs["executable_path"] = executable
+
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             accept_downloads=True,
             ignore_https_errors=False,
