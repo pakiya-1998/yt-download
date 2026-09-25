@@ -63,8 +63,16 @@ def parse_netscape_cookies(raw: str):
 def run_test(cookie_bytes: bytes, youtube_url: str, is_headless: bool):
     try:
         from playwright.sync_api import sync_playwright
-    except ImportError:
-        st.error("Playwright is not installed. Install it with: pip install playwright")
+    except ImportError as exc:
+        st.error(
+            "Playwright package is not installed in this deployment. "
+            "Make sure requirements.txt contains playwright>=1.50,<2 and redeploy/reboot the app."
+        )
+        st.code(f"Import error: {exc}")
+        st.info(
+            "If you already committed requirements.txt, Streamlit Cloud needs to rebuild the "
+            "environment before Playwright becomes available."
+        )
         return
 
     raw = cookie_bytes.decode("utf-8", errors="replace")
