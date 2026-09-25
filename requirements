@@ -1,2 +1,7 @@
-streamlit>=1.40
+streamlit
+imageio-ffmpeg
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
 playwright>=1.50,<2
