@@ -695,7 +695,7 @@ def _ffmpeg_executable():
     # Use it explicitly so yt-dlp can merge adaptive video + audio
     # even when the ffmpeg executable is not on Streamlit Cloud PATH.
     try:
-        exe = shutil.which("ffmpeg") or "ffmpeg"
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
         if exe and Path(exe).exists():
             return exe
     except Exception:
