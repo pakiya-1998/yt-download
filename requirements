@@ -2,7 +2,6 @@ streamlit
 pytubefix
 yt-dlp[default]>=2026.7.0
 bgutil-ytdlp-pot-provider>=2.0.0
-imageio-ffmpeg
 moviepy
 Pillow
 numpy
