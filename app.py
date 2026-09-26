@@ -4,37 +4,164 @@ import re
 from urllib.parse import urljoin
 
 st.set_page_config(
-    page_title="AMP4 JS Diagnostic",
-    page_icon="🔎",
+    page_title="AMP4 Deep JS Diagnostic",
+    page_icon="🕵️",
     layout="wide"
 )
 
-st.title("🔎 AMP4 JavaScript Endpoint Diagnostic")
+st.title("🕵️ AMP4 Deep JavaScript Diagnostic")
 
 st.warning(
-    "Diagnostic only. This tool inspects public HTML/JavaScript. "
+    "Diagnostic only. This tool inspects publicly loaded AMP4 HTML/JavaScript. "
     "It does NOT bypass CAPTCHA, anti-bot protection, login controls, "
     "or access restrictions."
 )
 
 st.caption(
-    "No Playwright • No Selenium • No Chromium • Normal HTTP requests only"
+    "Goal: find the public JavaScript request used by AMP4 for conversion."
 )
 
+# ============================================================
+# SETTINGS
+# ============================================================
+
 page_url = st.text_input(
-    "AMP4 page",
-    "https://amp4.cc/"
+    "AMP4 Page URL",
+    value="https://amp4.cc/"
 )
 
 max_scripts = st.slider(
     "Maximum JavaScript files to inspect",
-    1,
-    30,
-    15
+    min_value=1,
+    max_value=40,
+    value=20
 )
 
+context_lines = st.slider(
+    "Context around detected request",
+    min_value=5,
+    max_value=40,
+    value=15
+)
 
-if st.button("🔎 Inspect AMP4", type="primary"):
+# ============================================================
+# HELPERS
+# ============================================================
+
+def get_context(text, position, radius=500):
+    """
+    Return text around a detected match.
+    """
+    start = max(0, position - radius)
+    end = min(len(text), position + radius)
+
+    return text[start:end]
+
+
+def clean_context(text):
+    """
+    Make JavaScript easier to read in Streamlit.
+    """
+    text = text.replace("\\n", "\n")
+    text = text.replace("\\r", "")
+    text = re.sub(r"\s+", " ", text)
+
+    return text[:4000]
+
+
+def search_request_context(source_name, source_text):
+    """
+    Search for likely network/API/conversion calls and
+    return the surrounding JavaScript context.
+    """
+
+    patterns = [
+
+        # fetch(...)
+        (
+            "FETCH",
+            r"""fetch\s*\("""
+        ),
+
+        # axios.get/post/etc
+        (
+            "AXIOS",
+            r"""axios\s*\.\s*(?:get|post|put|patch|delete|request)\s*\("""
+        ),
+
+        # XMLHttpRequest
+        (
+            "XHR",
+            r"""(?:XMLHttpRequest|\.open\s*\()"""
+        ),
+
+        # $.ajax / $.get / $.post
+        (
+            "JQUERY AJAX",
+            r"""\$\s*\.\s*(?:ajax|get|post)\s*\("""
+        ),
+
+        # URL-looking strings
+        (
+            "API URL",
+            r"""["'`](?:https?:)?//[^"'`\s]+["'`]"""
+        ),
+
+        # Relative API paths
+        (
+            "API PATH",
+            r"""["'`](?:/|\./|\.\./)(?:api|ajax|convert|download|process|video|youtube|task|job|status|result)[^"'`]*["'`]"""
+        )
+    ]
+
+    results = []
+
+    for label, pattern in patterns:
+
+        try:
+
+            matches = list(
+                re.finditer(
+                    pattern,
+                    source_text,
+                    re.IGNORECASE
+                )
+            )
+
+        except Exception:
+
+            matches = []
+
+        for match in matches[:50]:
+
+            position = match.start()
+
+            context = get_context(
+                source_text,
+                position,
+                radius=1500
+            )
+
+            results.append(
+                {
+                    "type": label,
+                    "position": position,
+                    "match": match.group(0)[:500],
+                    "context": clean_context(context)
+                }
+            )
+
+    return results
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if st.button(
+    "🕵️ Deep Inspect AMP4",
+    type="primary"
+):
 
     session = requests.Session()
 
@@ -49,34 +176,53 @@ if st.button("🔎 Inspect AMP4", type="primary"):
             "application/xml;q=0.9,*/*;q=0.8"
         ),
         "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://amp4.cc/"
     }
 
     try:
 
-        # =====================================================
-        # 1. OPEN AMP4
-        # =====================================================
+        # ====================================================
+        # STEP 1
+        # ====================================================
 
-        with st.spinner("AMP4 page read ho rahi hai..."):
+        st.write("## 1️⃣ AMP4 Connection")
+
+        with st.spinner(
+            "AMP4 page load ho rahi hai..."
+        ):
 
             response = session.get(
                 page_url,
                 headers=headers,
-                timeout=30
+                timeout=30,
+                allow_redirects=True
             )
 
-        st.write("### 1. AMP4 Connection")
+        if response.status_code == 200:
 
-        st.success(
-            f"HTTP {response.status_code} — {response.url}"
+            st.success(
+                f"HTTP {response.status_code} ✅"
+            )
+
+        else:
+
+            st.warning(
+                f"AMP4 returned HTTP {response.status_code}"
+            )
+
+        st.write(
+            "**Final URL:**",
+            response.url
         )
 
         html = response.text
         html_lower = html.lower()
 
-        # =====================================================
-        # SECURITY / CAPTCHA CHECK
-        # =====================================================
+        # ====================================================
+        # STEP 2
+        # ====================================================
+
+        st.write("## 2️⃣ Security Check")
 
         security_words = [
             "captcha",
@@ -88,42 +234,43 @@ if st.button("🔎 Inspect AMP4", type="primary"):
         ]
 
         security_found = [
-            word
-            for word in security_words
-            if word in html_lower
+            x
+            for x in security_words
+            if x in html_lower
         ]
 
         if security_found:
 
             st.warning(
-                "Security/CAPTCHA indicators found: "
+                "Security indicators found: "
                 + ", ".join(security_found)
             )
 
         else:
 
             st.success(
-                "No obvious CAPTCHA/security keyword found "
-                "in initial HTML."
+                "No obvious security keyword found."
             )
 
-        # =====================================================
-        # 2. FIND JAVASCRIPT FILES
-        # =====================================================
+        # ====================================================
+        # STEP 3
+        # ====================================================
 
-        script_urls = []
+        st.write("## 3️⃣ JavaScript Files")
 
         script_pattern = (
             r"""<script\b[^>]*\bsrc=["']([^"']+)["']"""
         )
 
-        matches = re.findall(
+        script_sources = re.findall(
             script_pattern,
             html,
             re.IGNORECASE
         )
 
-        for src in matches:
+        script_urls = []
+
+        for src in script_sources:
 
             full_url = urljoin(
                 response.url,
@@ -132,29 +279,46 @@ if st.button("🔎 Inspect AMP4", type="primary"):
 
             if full_url not in script_urls:
 
-                script_urls.append(full_url)
+                script_urls.append(
+                    full_url
+                )
 
-        st.write("### 2. JavaScript Files")
-
-        st.write(
-            f"Found **{len(script_urls)}** external JavaScript files."
+        st.success(
+            f"{len(script_urls)} JavaScript files found."
         )
 
-        for script_url in script_urls[:max_scripts]:
+        for index, url in enumerate(
+            script_urls[:max_scripts],
+            start=1
+        ):
 
-            st.code(script_url)
+            st.write(
+                f"**JS {index}:**"
+            )
 
-        # =====================================================
-        # DOWNLOAD JS FILES
-        # =====================================================
+            st.code(url)
+
+        # ====================================================
+        # STEP 4
+        # DOWNLOAD JS
+        # ====================================================
+
+        st.write(
+            "## 4️⃣ Downloading JavaScript for inspection"
+        )
 
         sources = [
-            ("AMP4 HTML", html)
+            (
+                "AMP4 HTML",
+                html
+            )
         ]
 
         progress = st.progress(0)
 
-        scripts_to_check = script_urls[:max_scripts]
+        scripts_to_check = script_urls[
+            :max_scripts
+        ]
 
         for index, script_url in enumerate(
             scripts_to_check
@@ -165,7 +329,7 @@ if st.button("🔎 Inspect AMP4", type="primary"):
                 js_response = session.get(
                     script_url,
                     headers=headers,
-                    timeout=20
+                    timeout=25
                 )
 
                 if js_response.ok:
@@ -192,254 +356,306 @@ if st.button("🔎 Inspect AMP4", type="primary"):
                 )
             )
 
-        # =====================================================
-        # 3. POSSIBLE API ENDPOINTS
-        # =====================================================
+        st.success(
+            f"{len(sources)} source files loaded."
+        )
 
-        endpoint_patterns = [
+        # ====================================================
+        # STEP 5
+        # REQUEST CONTEXT
+        # ====================================================
 
-            r"""["'`]((?:https?:)?//[^"'`\s]+/[^"'`\s]*)["'`]""",
+        st.write(
+            "## 5️⃣ Actual JavaScript Request Detection"
+        )
 
-            r"""["'`]((?:/|\./|\.\./)(?:api|ajax|convert|download|process|youtube|video|task|job|status|result|file)[^"'`\\\s]*)["'`]"""
-        ]
-
-        request_patterns = [
-
-            r"""fetch\s*\(\s*["'`]([^"'`]+)""",
-
-            r"""axios\.(?:get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)""",
-
-            r"""\.open\s*\(\s*["'](?:GET|POST|PUT|PATCH|DELETE)["']\s*,\s*["'`]([^"'`]+)"""
-        ]
-
-        possible_endpoints = set()
-
-        javascript_requests = []
+        all_results = []
 
         for source_name, source_text in sources:
 
-            # ---------------------------------------------
-            # Endpoint search
-            # ---------------------------------------------
+            results = search_request_context(
+                source_name,
+                source_text
+            )
 
-            for pattern in endpoint_patterns:
+            for result in results:
 
-                try:
+                result["source"] = source_name
 
-                    found_items = re.findall(
-                        pattern,
-                        source_text,
-                        re.IGNORECASE
+                all_results.append(
+                    result
+                )
+
+        # Remove exact duplicates
+
+        unique_results = []
+
+        seen = set()
+
+        for item in all_results:
+
+            key = (
+                item["source"],
+                item["type"],
+                item["match"]
+            )
+
+            if key not in seen:
+
+                seen.add(key)
+
+                unique_results.append(
+                    item
+                )
+
+        if not unique_results:
+
+            st.error(
+                "❌ No obvious JavaScript request found."
+            )
+
+        else:
+
+            st.success(
+                f"Found {len(unique_results)} request/API references."
+            )
+
+            # =================================================
+            # GROUP BY TYPE
+            # =================================================
+
+            request_types = {}
+
+            for item in unique_results:
+
+                request_types.setdefault(
+                    item["type"],
+                    []
+                ).append(item)
+
+            # =================================================
+            # DISPLAY
+            # =================================================
+
+            for request_type, items in request_types.items():
+
+                st.write(
+                    f"### 🔹 {request_type} "
+                    f"({len(items)})"
+                )
+
+                for number, item in enumerate(
+                    items[:20],
+                    start=1
+                ):
+
+                    title = (
+                        f"{number}. "
+                        f"{item['source'][:80]}"
                     )
 
-                except Exception:
-
-                    found_items = []
-
-                for item in found_items:
-
-                    if (
-                        "amp4.cc" in item.lower()
-                        or item.startswith("/")
-                        or item.startswith("./")
-                        or item.startswith("../")
+                    with st.expander(
+                        title,
+                        expanded=False
                     ):
 
-                        possible_endpoints.add(
-                            (
-                                source_name,
-                                item[:500]
-                            )
+                        st.write(
+                            "**Detected:**"
                         )
 
-            # ---------------------------------------------
-            # fetch / axios / XHR search
-            # ---------------------------------------------
-
-            for pattern in request_patterns:
-
-                try:
-
-                    found_requests = re.findall(
-                        pattern,
-                        source_text,
-                        re.IGNORECASE
-                    )
-
-                except Exception:
-
-                    found_requests = []
-
-                for item in found_requests:
-
-                    javascript_requests.append(
-                        (
-                            source_name,
-                            item[:500]
+                        st.code(
+                            item["match"]
                         )
-                    )
 
-        # =====================================================
-        # SHOW ENDPOINTS
-        # =====================================================
-
-        st.write(
-            "### 3. Possible API / Conversion References"
-        )
-
-        if possible_endpoints:
-
-            rows = []
-
-            for source_name, endpoint in sorted(
-                possible_endpoints
-            ):
-
-                rows.append(
-                    {
-                        "Source": source_name[:100],
-
-                        "Reference": endpoint,
-
-                        "Resolved URL": urljoin(
-                            page_url,
-                            endpoint
+                        st.write(
+                            "**JavaScript context:**"
                         )
-                    }
-                )
 
-            st.dataframe(
-                rows,
-                use_container_width=True,
-                hide_index=True
-            )
+                        st.code(
+                            item["context"],
+                            language="javascript"
+                        )
 
-        else:
-
-            st.info(
-                "No obvious endpoint reference found "
-                "in the inspected HTML/JS."
-            )
-
-        # =====================================================
-        # 4. JAVASCRIPT REQUESTS
-        # =====================================================
+        # ====================================================
+        # STEP 6
+        # TARGETED AMP4 TERMS
+        # ====================================================
 
         st.write(
-            "### 4. JavaScript Request Calls"
+            "## 6️⃣ AMP4 Conversion Keywords"
         )
 
-        unique_requests = list(
-            dict.fromkeys(
-                javascript_requests
-            )
-        )
-
-        if unique_requests:
-
-            rows = []
-
-            for source_name, request_target in unique_requests[:200]:
-
-                rows.append(
-                    {
-                        "Source": source_name[:100],
-
-                        "Request Target": request_target
-                    }
-                )
-
-            st.dataframe(
-                rows,
-                use_container_width=True,
-                hide_index=True
-            )
-
-        else:
-
-            st.info(
-                "No obvious fetch/axios/XHR target found."
-            )
-
-        # =====================================================
-        # 5. CONVERSION KEYWORDS
-        # =====================================================
-
-        st.write(
-            "### 5. Conversion-Related Keywords"
-        )
-
-        keywords = [
+        important_words = [
             "youtube",
-            "convert",
+            "video",
             "download",
+            "convert",
+            "conversion",
             "format",
             "quality",
-            "video",
             "mp4",
             "webm",
             "trim",
             "captcha",
             "token",
-            "api",
-            "ajax",
+            "queue",
             "status",
+            "progress",
             "result",
             "job",
-            "task"
+            "task",
+            "file",
+            "url"
         ]
 
-        keyword_rows = []
+        keyword_results = []
 
         for source_name, source_text in sources:
 
-            source_lower = source_text.lower()
+            text_lower = source_text.lower()
 
-            found_keywords = [
-                keyword
-                for keyword in keywords
-                if keyword in source_lower
-            ]
+            found = []
 
-            if found_keywords:
+            for word in important_words:
 
-                keyword_rows.append(
+                if word in text_lower:
+
+                    found.append(word)
+
+            if found:
+
+                keyword_results.append(
                     {
                         "Source": source_name[:100],
-
-                        "Keywords": ", ".join(
-                            found_keywords
-                        )
+                        "Keywords": ", ".join(found)
                     }
                 )
 
-        if keyword_rows:
+        if keyword_results:
 
             st.dataframe(
-                keyword_rows,
+                keyword_results,
                 use_container_width=True,
                 hide_index=True
             )
 
-        # =====================================================
-        # FINAL RESULT
-        # =====================================================
+        # ====================================================
+        # STEP 7
+        # SEARCH FOR YOUTUBE URL FIELD
+        # ====================================================
 
-        st.write("### 6. Result")
+        st.write(
+            "## 7️⃣ YouTube URL / Form References"
+        )
+
+        youtube_patterns = [
+            r"""youtube""",
+            r"""youtube_url""",
+            r"""video_url""",
+            r"""videoUrl""",
+            r"""url\s*:""",
+            r"""url\s*=""",
+            r"""youtube\.com""",
+            r"""youtu\.be"""
+        ]
+
+        youtube_hits = []
+
+        for source_name, source_text in sources:
+
+            for pattern in youtube_patterns:
+
+                try:
+
+                    matches = list(
+                        re.finditer(
+                            pattern,
+                            source_text,
+                            re.IGNORECASE
+                        )
+                    )
+
+                except Exception:
+
+                    matches = []
+
+                for match in matches[:15]:
+
+                    context = get_context(
+                        source_text,
+                        match.start(),
+                        radius=1000
+                    )
+
+                    youtube_hits.append(
+                        {
+                            "source": source_name,
+                            "pattern": pattern,
+                            "context": clean_context(
+                                context
+                            )
+                        }
+                    )
+
+        if youtube_hits:
+
+            st.success(
+                f"{len(youtube_hits)} YouTube-related references found."
+            )
+
+            for index, hit in enumerate(
+                youtube_hits[:30],
+                start=1
+            ):
+
+                with st.expander(
+                    f"YouTube reference {index}"
+                ):
+
+                    st.write(
+                        "**Source:**",
+                        hit["source"]
+                    )
+
+                    st.write(
+                        "**Matched:**",
+                        hit["pattern"]
+                    )
+
+                    st.code(
+                        hit["context"],
+                        language="javascript"
+                    )
+
+        else:
+
+            st.warning(
+                "No YouTube URL reference found."
+            )
+
+        # ====================================================
+        # STEP 8
+        # FINAL
+        # ====================================================
+
+        st.write(
+            "## 8️⃣ Diagnostic Result"
+        )
 
         st.success(
-            "✅ AMP4 JavaScript diagnostic complete."
+            "✅ Deep AMP4 JavaScript inspection complete."
         )
 
         st.info(
-            "Agar conversion/API endpoint milta hai, "
-            "hum us public request ko study karke "
-            "normal API integration bana sakte hain."
+            "Ab humein normal asset URLs ke bajay "
+            "JavaScript request ke aas-paas ka actual code "
+            "dikhna chahiye."
         )
 
         st.warning(
-            "⚠️ Ye tool CAPTCHA, anti-bot protection, "
-            "login controls ya access restrictions bypass nahi karta."
+            "⚠️ Agar request CAPTCHA, authentication, "
+            "private token, ya access-control ke peeche hai, "
+            "ye tool us protection ko bypass nahi karega."
         )
 
     except requests.RequestException as error:
