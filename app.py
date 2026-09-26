@@ -18,7 +18,6 @@ from datetime import datetime, date, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
-import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont
 import yt_dlp
 
@@ -52,7 +51,7 @@ st.set_page_config(
     layout="centered"
 )
 
-FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 
 YOUTUBE_SCOPE = [
     # Needed for uploading Shorts.
@@ -696,7 +695,7 @@ def _ffmpeg_executable():
     # Use it explicitly so yt-dlp can merge adaptive video + audio
     # even when the ffmpeg executable is not on Streamlit Cloud PATH.
     try:
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        exe = shutil.which("ffmpeg") or "ffmpeg"
         if exe and Path(exe).exists():
             return exe
     except Exception:
