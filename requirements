@@ -1,7 +1,7 @@
 streamlit>=1.40
 pytubefix>=8.0.0
-yt-dlp[default]>=2026.8.19
-bgutil-ytdlp-pot-provider>=2.0.0
+yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0
 Pillow>=10.0
 numpy>=1.26
 opencv-python-headless>=4.10
