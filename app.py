@@ -735,62 +735,72 @@ def _ytdlp_base_options(output_path):
 
 
 def _ytdlp_info_with_clients(url, cookies_path=""):
-    """Read metadata with genuinely different YouTube clients."""
+    """Read metadata using a short, ordered set of YouTube strategies.
+
+    If the user supplied cookies, yt-dlp is used directly. pytubefix cannot
+    consume the uploaded cookies and therefore only adds an unnecessary bot
+    request in that case.
+    """
     errors = []
+    cookie_summary = _youtube_cookie_summary(cookies_path)
+
     for label, extractor_args in _youtube_client_attempts(include_bgutil=True):
         try:
-            options = {
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "skip_download": True,
-                "js_runtimes": _yt_runtime_options(),
-                "remote_components": ["ejs:github"],
-                "socket_timeout": 30,
-            }
-            if extractor_args:
-                options["extractor_args"] = extractor_args
-            _cookie_option(options, cookies_path)
-
+            options = _yt_attempt_options(
+                extractor_args=extractor_args,
+                cookies_path=cookies_path,
+                metadata=True,
+            )
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
 
             if info.get("_type") == "playlist":
                 raise ValueError("Playlist link nahi, ek single YouTube video link do.")
 
+            title = info.get("title") or "YouTube Video"
+            duration = float(info.get("duration") or 0)
+
             return {
-                "title": info.get("title") or "YouTube Video",
-                "duration": float(info.get("duration") or 0),
+                "title": title,
+                "duration": duration,
                 "webpage_url": info.get("webpage_url") or url,
+                "downloader_client": label,
+                "cookie_summary": cookie_summary,
             }
         except Exception as e:
             errors.append(f"{label}: {e}")
 
-    raise RuntimeError("yt-dlp metadata attempts failed:\n" + "\n".join(errors))
+    provider = _provider_status()
+    cookie_text = (
+        f"Cookies loaded: YES ({cookie_summary['youtube_count']} YouTube/Google cookie rows detected)"
+        if cookie_summary["loaded"]
+        else "Cookies loaded: NO"
+    )
 
-
+    raise RuntimeError(
+        "YouTube metadata extraction blocked.\n\n"
+        + cookie_text
+        + "\n"
+        + provider
+        + "\n\n"
+        + "\n".join(errors)
+        + "\n\nYouTube server-side bot/rate-limit response ko app force nahi kar sakta."
+    )
 
 
 def _youtube_format_diagnostic(url, cookies_path=""):
-    """Inspect formats for each real client without downloading."""
+    """Run a compact diagnostic and return safe, user-readable results."""
     results = []
     failures = []
+    cookie_summary = _youtube_cookie_summary(cookies_path)
 
     for label, extractor_args in _youtube_client_attempts(include_bgutil=True):
         try:
-            options = {
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "skip_download": True,
-                "js_runtimes": _yt_runtime_options(),
-                "remote_components": ["ejs:github"],
-                "socket_timeout": 30,
-            }
-            if extractor_args:
-                options["extractor_args"] = extractor_args
-            _cookie_option(options, cookies_path)
-
+            options = _yt_attempt_options(
+                extractor_args=extractor_args,
+                cookies_path=cookies_path,
+                metadata=True,
+            )
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
 
@@ -813,7 +823,10 @@ def _youtube_format_diagnostic(url, cookies_path=""):
                     "protocol": protocol,
                     "video": vcodec,
                     "audio": acodec,
-                    "filesize_mb": round((f.get("filesize") or f.get("filesize_approx") or 0) / 1024 / 1024, 1),
+                    "filesize_mb": round(
+                        (f.get("filesize") or f.get("filesize_approx") or 0) / 1024 / 1024,
+                        1,
+                    ),
                     "has_audio": bool(acodec and acodec != "none"),
                 })
 
@@ -827,16 +840,27 @@ def _youtube_format_diagnostic(url, cookies_path=""):
             results.append({
                 "client": label,
                 "title": info.get("title") or "",
+                "duration": float(info.get("duration") or 0),
                 "format_count": len(formats),
                 "video_format_count": len(usable),
-                "formats": usable[:15],
+                "formats": usable[:12],
             })
         except Exception as e:
             failures.append(f"{label}: {e}")
 
+    if not results and failures:
+        failures.insert(0, _provider_status())
+        failures.insert(
+            1,
+            "Cookies: "
+            + (
+                f"loaded; {cookie_summary['youtube_count']} YouTube/Google rows detected"
+                if cookie_summary["loaded"]
+                else "not loaded"
+            ),
+        )
+
     return results, failures
-
-
 
 
 def _pick_progressive_format(info):
@@ -1058,34 +1082,140 @@ def _download_split_streams(url, output_path, extractor_args=None,
 
 
 def _youtube_client_attempts(include_bgutil=True):
-    """Return genuinely different YouTube client configurations.
+    """Return a small, ordered set of genuinely different YouTube clients.
 
-    V33 accidentally wrapped every client with _mweb_extractor_args(), which
-    forced web_safari/tv/ios/etc. to use mweb underneath. V34 keeps each
-    client independent and adds mweb+bgutil only as a separate final attempt.
+    The previous version tried many clients one after another. That made a
+    server-side bot check produce a huge error wall without adding much value.
+    The current order follows the current yt-dlp guidance: try web_safari for
+    its HLS path, then mweb with a PO-token provider, then a couple of clients
+    that can work without GVS PO tokens, and finally the default extractor.
     """
     attempts = [
-        ("default", {}),
-        ("web_safari", {"youtube": {"player_client": ["web_safari"]}}),
-        ("web_embedded", {"youtube": {"player_client": ["web_embedded"]}}),
-        ("tv_embedded", {"youtube": {"player_client": ["tv_embedded"]}}),
-        ("tv", {"youtube": {"player_client": ["tv"]}}),
-        ("ios", {"youtube": {"player_client": ["ios"]}}),
-        ("android_vr", {"youtube": {"player_client": ["android_vr"]}}),
-        ("mweb", {"youtube": {"player_client": ["mweb"]}}),
+        (
+            "web_safari (HLS-capable)",
+            {
+                "youtube": {
+                    "player_client": ["web_safari"],
+                    "webpage_client": "web_safari",
+                }
+            },
+        ),
+        (
+            "tv",
+            {
+                "youtube": {
+                    "player_client": ["tv"],
+                    # Skipping the initial webpage can avoid a webpage-only
+                    # bot/rate-limit response. Metadata may be reduced.
+                    "player_skip": ["webpage"],
+                }
+            },
+        ),
+        (
+            "web_embedded",
+            {
+                "youtube": {
+                    "player_client": ["web_embedded"],
+                }
+            },
+        ),
     ]
 
     if include_bgutil:
         base_url = _get_bgutil_base_url()
         if base_url:
-            attempts.append((
-                "mweb + bgutil PO-token",
-                {
-                    "youtube": {"player_client": ["mweb"]},
-                    "youtubepot-bgutilhttp": {"base_url": base_url},
-                },
-            ))
+            attempts.append(
+                (
+                    "mweb + bgutil PO-token",
+                    {
+                        "youtube": {
+                            "player_client": ["mweb"],
+                        },
+                        "youtubepot-bgutilhttp": {
+                            "base_url": base_url,
+                        },
+                    },
+                )
+            )
+
+    # Keep the normal extractor as the final fallback.
+    attempts.append(("default", {}))
     return attempts
+
+
+def _provider_extractor_args(base_args=None):
+    """Add the bgutil HTTP provider without changing the selected client."""
+    args = dict(base_args or {})
+    base_url = _get_bgutil_base_url()
+    if base_url:
+        args["youtubepot-bgutilhttp"] = {"base_url": base_url}
+    return args
+
+
+def _mweb_extractor_args(extra=None):
+    """Build an mweb-specific config; do not use this for other clients."""
+    args = dict(extra or {})
+    youtube = dict(args.get("youtube") or {})
+    youtube["player_client"] = ["mweb"]
+    args["youtube"] = youtube
+    return _provider_extractor_args(args)
+
+
+def _provider_status():
+    """Return a safe provider status string without exposing credentials."""
+    base_url = _get_bgutil_base_url()
+    if not base_url:
+        return "PO-token provider: NOT AVAILABLE"
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/ping", timeout=2) as resp:
+            if resp.status == 200:
+                return f"PO-token provider: READY ({base_url})"
+    except Exception as exc:
+        return f"PO-token provider: UNREACHABLE ({type(exc).__name__})"
+    return "PO-token provider: UNAVAILABLE"
+
+
+def _youtube_cookie_summary(cookies_path):
+    """Return cookie metadata only; never expose cookie values."""
+    if not cookies_path or not os.path.exists(cookies_path):
+        return {"loaded": False, "count": 0, "youtube_count": 0}
+
+    count = 0
+    youtube_count = 0
+    try:
+        with open(cookies_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    count += 1
+                    domain = parts[0].lower()
+                    if "youtube.com" in domain or "google.com" in domain:
+                        youtube_count += 1
+    except Exception:
+        pass
+    return {"loaded": True, "count": count, "youtube_count": youtube_count}
+
+
+def _yt_attempt_options(extractor_args=None, cookies_path="", metadata=False):
+    """Build common yt-dlp options for one exact client attempt."""
+    options = {
+        "quiet": True,
+        "no_warnings": not metadata,
+        "noplaylist": True,
+        "skip_download": True if metadata else False,
+        "js_runtimes": _yt_runtime_options(),
+        "remote_components": ["ejs:github"],
+        "socket_timeout": 30,
+        "retries": 2,
+        "fragment_retries": 2,
+    }
+    if extractor_args:
+        options["extractor_args"] = extractor_args
+    _cookie_option(options, cookies_path)
+    return options
 
 
 def _provider_extractor_args(base_args=None):
@@ -1143,7 +1273,7 @@ def _probe_progressive_format(url, extractor_args=None, cookies_path=""):
 
 
 def _ytdlp_download_smart(url, output_path, cookies_path="", progress_callback=None):
-    """Download using independent YouTube clients, then mweb+bgutil."""
+    """Download using the same exact client order used by metadata extraction."""
     errors = []
 
     for label, extractor_args in _youtube_client_attempts(include_bgutil=True):
@@ -1166,10 +1296,19 @@ def _ytdlp_download_smart(url, output_path, cookies_path="", progress_callback=N
                 pass
 
         try:
-            # First ask this exact client for a progressive stream.
-            progressive_id = _probe_progressive_format(
-                url, extractor_args=extractor_args, cookies_path=cookies_path
+            # Probe the exact same client configuration before downloading.
+            probe_options = _yt_attempt_options(
+                extractor_args=extractor_args,
+                cookies_path=cookies_path,
+                metadata=True,
             )
+            with yt_dlp.YoutubeDL(probe_options) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+            if info.get("_type") == "playlist":
+                raise RuntimeError("Playlist link nahi, ek single YouTube video link do.")
+
+            progressive_id = _pick_progressive_format(info)
 
             if progressive_id:
                 options = {
@@ -1198,9 +1337,13 @@ def _ytdlp_download_smart(url, output_path, cookies_path="", progress_callback=N
                     return label
                 raise RuntimeError("Progressive download completed without output.")
 
-            # No combined stream: download video/audio separately and mux.
+            # Adaptive formats: download video/audio separately and mux locally.
             _download_split_streams(
-                url, output_path, extractor_args, cookies_path, progress_callback
+                url,
+                output_path,
+                extractor_args,
+                cookies_path,
+                progress_callback,
             )
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return label
@@ -1210,16 +1353,24 @@ def _ytdlp_download_smart(url, output_path, cookies_path="", progress_callback=N
             errors.append(f"{label}: {e}")
 
     cleanup_temp_file(output_path)
+    cookie_summary = _youtube_cookie_summary(cookies_path)
     raise RuntimeError(
-        "YouTube download ke sabhi automatic methods fail hue:\n\n" +
-        "\n\n".join(errors)
+        "YouTube download blocked after all configured strategies.\n\n"
+        + _provider_status()
+        + "\n"
+        + (
+            f"Cookies: loaded; {cookie_summary['youtube_count']} YouTube/Google rows detected."
+            if cookie_summary["loaded"]
+            else "Cookies: not loaded."
+        )
+        + "\n\n"
+        + "\n\n".join(errors)
+        + "\n\nYouTube bot/rate-limit restrictions cannot be guaranteed to clear from code alone."
     )
 
 
-
-
 def get_youtube_source_info(url, cookies_path=""):
-    """Metadata: pytubefix first, then yt-dlp clients."""
+    """Metadata: use yt-dlp directly when cookies are supplied; otherwise try pytubefix first."""
     if not _youtube_url_ok(url):
         raise ValueError(
             "Valid YouTube video link paste karo, example: "
@@ -1228,10 +1379,11 @@ def get_youtube_source_info(url, cookies_path=""):
 
     errors = []
 
-    try:
-        return _pytubefix_info(url)
-    except Exception as e:
-        errors.append(f"pytubefix: {e}")
+    if not cookies_path:
+        try:
+            return _pytubefix_info(url)
+        except Exception as e:
+            errors.append(f"pytubefix: {e}")
 
     try:
         return _ytdlp_info_with_clients(url, cookies_path)
@@ -1244,18 +1396,26 @@ def get_youtube_source_info(url, cookies_path=""):
 
 
 def download_youtube_source(url, output_path, cookies_path="", progress_callback=None):
-    """Smart downloader: pytubefix first, then multi-client yt-dlp."""
+    """Smart downloader with cookie-aware routing and compact client fallback."""
     errors = []
 
-    try:
-        _pytubefix_download(url, output_path)
-        return "pytubefix"
-    except Exception as e:
-        errors.append(f"pytubefix: {e}")
-        cleanup_temp_file(output_path)
+    # pytubefix has no place to consume the uploaded cookies, so don't make a
+    # known-bad unauthenticated request when the user already supplied cookies.
+    if not cookies_path:
+        try:
+            _pytubefix_download(url, output_path)
+            return "pytubefix"
+        except Exception as e:
+            errors.append(f"pytubefix: {e}")
+            cleanup_temp_file(output_path)
 
     try:
-        return _ytdlp_download_smart(url, output_path, cookies_path, progress_callback)
+        return _ytdlp_download_smart(
+            url,
+            output_path,
+            cookies_path,
+            progress_callback,
+        )
     except Exception as e:
         errors.append(f"yt-dlp smart clients: {e}")
         cleanup_temp_file(output_path)
@@ -2071,7 +2231,13 @@ with st.expander("🎬 Video Source", expanded=False):
             )
             youtube_cookie_path = _youtube_cookie_path(youtube_cookie_file)
             if youtube_cookie_path:
+                cookie_summary = _youtube_cookie_summary(youtube_cookie_path)
                 st.success("✅ Private cookies.txt loaded for this session.")
+                st.caption(
+                    f"Cookie rows detected: {cookie_summary['count']} • "
+                    f"YouTube/Google rows: {cookie_summary['youtube_count']} • "
+                    "Cookie values are never displayed."
+                )
 
         if youtube_url.strip():
             try:
@@ -2593,8 +2759,8 @@ if process_clicked:
 
             with st.expander("🔍 YouTube Format Diagnostic", expanded=True):
                 st.caption(
-                    "Diagnostic sirf available formats check karta hai. Cookies ya secret values display nahi hoti. "
-                    "Agar sabhi clients extraction par fail ho jayein, problem YouTube bot/PO-token/JS-runtime side par hai."
+                    "Compact diagnostic: web_safari → tv → web_embedded → mweb+PO-token → default. "
+                    "Cookie values kabhi display nahi hoti. PO-token provider 403/bot checks ko guarantee nahi karta."
                 )
                 with st.spinner("YouTube ke available formats check ho rahe hain..."):
                     diag_results, diag_failures = _youtube_format_diagnostic(
