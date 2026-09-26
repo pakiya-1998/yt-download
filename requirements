@@ -1,2 +1,14 @@
-streamlit>=1.40
-requests>=2.32
+streamlit
+pytubefix
+yt-dlp[default]>=2026.7.0
+bgutil-ytdlp-pot-provider>=2.0.0
+imageio-ffmpeg
+moviepy
+Pillow
+numpy
+opencv-python-headless
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+requests
