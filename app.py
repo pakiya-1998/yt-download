@@ -13,14 +13,32 @@ import time
 import tarfile
 import platform
 import urllib.request
+import sys
+
+# Streamlit Cloud safety net: if requirements.txt was not applied to the
+# current build, install the downloader package before importing it.
+def _ensure_yt_dlp():
+    try:
+        import yt_dlp as _yt_dlp
+        return _yt_dlp
+    except ModuleNotFoundError:
+        import subprocess as _sp
+        _sp.run(
+            [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+             "--no-cache-dir", "yt-dlp==2026.8.19"],
+            check=True,
+        )
+        import yt_dlp as _yt_dlp
+        return _yt_dlp
+
+yt_dlp = _ensure_yt_dlp()
+
 from pathlib import Path
 from datetime import datetime, date, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
-import yt_dlp
-
 try:
     import curl_cffi
 except Exception:
