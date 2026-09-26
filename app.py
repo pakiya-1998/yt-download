@@ -1,1050 +1,456 @@
 import streamlit as st
 import requests
 import re
-from html.parser import HTMLParser
-from urllib.parse import urljoin, urlparse
-from http.cookiejar import Cookie
-
-
-# =========================================================
-# PAGE
-# =========================================================
+from urllib.parse import urljoin
 
 st.set_page_config(
-    page_title="AMP4 Downloader Test",
-    page_icon="🚀",
-    layout="centered"
+    page_title="AMP4 JS Diagnostic",
+    page_icon="🔎",
+    layout="wide"
 )
 
-st.title("🚀 AMP4 Downloader Test")
+st.title("🔎 AMP4 JavaScript Endpoint Diagnostic")
 
 st.warning(
-    "Use this only for videos you are authorized to download "
-    "and where AMP4 permits the intended use. "
-    "Do not paste cookie values into chat."
+    "Diagnostic only. This tool inspects public HTML/JavaScript. "
+    "It does NOT bypass CAPTCHA, anti-bot protection, login controls, "
+    "or access restrictions."
 )
 
 st.caption(
-    "HTTP-only version — no Playwright, Selenium, Chromium or browser driver."
+    "No Playwright • No Selenium • No Chromium • Normal HTTP requests only"
+)
+
+page_url = st.text_input(
+    "AMP4 page",
+    "https://amp4.cc/"
+)
+
+max_scripts = st.slider(
+    "Maximum JavaScript files to inspect",
+    1,
+    30,
+    15
 )
 
 
-# =========================================================
-# HTML PARSER
-# =========================================================
-
-class AMP4Parser(HTMLParser):
-
-    def __init__(self):
-        super().__init__()
-
-        self.forms = []
-        self.links = []
-        self.scripts = []
-
-        self.current_form = None
-
-    def handle_starttag(self, tag, attrs):
-
-        attrs = dict(attrs)
-
-        tag = tag.lower()
-
-        # -----------------------------
-        # FORM
-        # -----------------------------
-
-        if tag == "form":
-
-            self.current_form = {
-                "action": attrs.get("action") or "/",
-                "method": (
-                    attrs.get("method") or "GET"
-                ).upper(),
-                "fields": []
-            }
-
-            self.forms.append(
-                self.current_form
-            )
-
-        # -----------------------------
-        # FORM FIELDS
-        # -----------------------------
-
-        elif tag in (
-            "input",
-            "select",
-            "textarea"
-        ):
-
-            if self.current_form:
-
-                name = attrs.get("name")
-
-                if name:
-
-                    self.current_form[
-                        "fields"
-                    ].append(
-                        {
-                            "name": name,
-                            "type": attrs.get(
-                                "type",
-                                ""
-                            ),
-                            "value": attrs.get(
-                                "value",
-                                ""
-                            )
-                        }
-                    )
-
-        # -----------------------------
-        # LINKS
-        # -----------------------------
-
-        elif tag == "a":
-
-            href = attrs.get("href")
-
-            if href:
-
-                self.links.append(
-                    href
-                )
-
-        # -----------------------------
-        # JAVASCRIPT
-        # -----------------------------
-
-        elif tag == "script":
-
-            src = attrs.get("src")
-
-            if src:
-
-                self.scripts.append(
-                    src
-                )
-
-
-# =========================================================
-# COOKIE LOADER
-# =========================================================
-
-def load_amp4_cookies(uploaded_file):
-
-    raw = uploaded_file.getvalue().decode(
-        "utf-8",
-        errors="replace"
-    )
+if st.button("🔎 Inspect AMP4", type="primary"):
 
     session = requests.Session()
 
-    count = 0
-
-    for line in raw.splitlines():
-
-        line = line.strip()
-
-        if not line:
-            continue
-
-        # Skip comments
-        if (
-            line.startswith("#")
-            and not line.startswith("#HttpOnly_")
-        ):
-            continue
-
-        line = line.replace(
-            "#HttpOnly_",
-            "",
-            1
-        )
-
-        parts = line.split("\t")
-
-        if len(parts) != 7:
-            continue
-
-        (
-            domain,
-            include_subdomains,
-            path,
-            secure,
-            expires,
-            name,
-            value
-        ) = parts
-
-        # Only AMP4 cookies
-        if "amp4.cc" not in domain.lower():
-            continue
-
-        try:
-            expires_value = int(
-                float(expires)
-            )
-        except Exception:
-            expires_value = None
-
-        cookie = Cookie(
-            version=0,
-            name=name,
-            value=value,
-            port=None,
-            port_specified=False,
-            domain=domain,
-            domain_specified=True,
-            domain_initial_dot=(
-                domain.startswith(".")
-            ),
-            path=path or "/",
-            path_specified=True,
-            secure=(
-                secure.upper() == "TRUE"
-            ),
-            expires=(
-                expires_value
-                if expires_value
-                and expires_value > 0
-                else None
-            ),
-            discard=False,
-            comment=None,
-            comment_url=None,
-            rest={},
-            rfc2109=False,
-        )
-
-        session.cookies.set_cookie(
-            cookie
-        )
-
-        count += 1
-
-    return session, count
-
-
-# =========================================================
-# HEADERS
-# =========================================================
-
-def get_headers():
-
-    return {
-
+    headers = {
         "User-Agent": (
-            "Mozilla/5.0 "
-            "(Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/153.0.0.0 "
-            "Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/153.0.0.0 Safari/537.36"
         ),
-
         "Accept": (
-            "text/html,"
-            "application/xhtml+xml,"
-            "application/xml;q=0.9,"
-            "image/avif,"
-            "image/webp,"
-            "*/*;q=0.8"
+            "text/html,application/xhtml+xml,"
+            "application/xml;q=0.9,*/*;q=0.8"
         ),
-
-        "Accept-Language":
-            "en-US,en;q=0.9",
-
-        "Cache-Control":
-            "no-cache",
-
-        "Pragma":
-            "no-cache",
-
-        "Referer":
-            "https://amp4.cc/"
+        "Accept-Language": "en-US,en;q=0.9",
     }
 
+    try:
 
-# =========================================================
-# GET AMP4 PAGE
-# =========================================================
+        # =====================================================
+        # 1. OPEN AMP4
+        # =====================================================
 
-def get_amp4(session):
+        with st.spinner("AMP4 page read ho rahi hai..."):
 
-    response = session.get(
-        "https://amp4.cc/",
-        headers=get_headers(),
-        timeout=30,
-        allow_redirects=True
-    )
-
-    return response
-
-
-# =========================================================
-# FIND YOUTUBE FIELD
-# =========================================================
-
-def find_youtube_field(form):
-
-    candidates = [
-
-        "url",
-        "video_url",
-        "youtube_url",
-        "youtube",
-        "link",
-        "video",
-        "input"
-    ]
-
-    fields = form.get(
-        "fields",
-        []
-    )
-
-    # Exact/strong match
-    for field in fields:
-
-        name = field[
-            "name"
-        ].lower()
-
-        if name in candidates:
-
-            return field[
-                "name"
-            ]
-
-    # Partial match
-    for field in fields:
-
-        name = field[
-            "name"
-        ].lower()
-
-        if (
-            "url" in name
-            or "youtube" in name
-            or "video" in name
-            or "link" in name
-        ):
-
-            return field[
-                "name"
-            ]
-
-    return None
-
-
-# =========================================================
-# FIND DOWNLOAD LINKS
-# =========================================================
-
-def find_download_links(
-    html,
-    base_url
-):
-
-    found = []
-
-    # href URLs
-    hrefs = re.findall(
-        r'href\s*=\s*["\']([^"\']+)["\']',
-        html,
-        flags=re.I
-    )
-
-    # src URLs
-    srcs = re.findall(
-        r'src\s*=\s*["\']([^"\']+)["\']',
-        html,
-        flags=re.I
-    )
-
-    # Direct MP4/WebM
-    for url in hrefs + srcs:
-
-        absolute = urljoin(
-            base_url,
-            url
-        )
-
-        lower = absolute.lower()
-
-        if (
-            ".mp4" in lower
-            or ".webm" in lower
-            or "download" in lower
-            or "file=" in lower
-            or "download_url" in lower
-        ):
-
-            if absolute not in found:
-
-                found.append(
-                    absolute
-                )
-
-    # JSON-style URLs
-    json_urls = re.findall(
-        r'["\'](https?://[^"\']+)["\']',
-        html,
-        flags=re.I
-    )
-
-    for url in json_urls:
-
-        lower = url.lower()
-
-        if (
-            ".mp4" in lower
-            or ".webm" in lower
-            or "download" in lower
-        ):
-
-            if url not in found:
-
-                found.append(
-                    url
-                )
-
-    return found
-
-
-# =========================================================
-# DETECT ANTI BOT
-# =========================================================
-
-def detect_antibot(html):
-
-    text = html.lower()
-
-    checks = [
-
-        "captcha",
-
-        "recaptcha",
-
-        "hcaptcha",
-
-        "cloudflare",
-
-        "challenge-platform",
-
-        "captcha failed",
-
-        "verify you are human"
-    ]
-
-    detected = []
-
-    for item in checks:
-
-        if item in text:
-
-            detected.append(
-                item
+            response = session.get(
+                page_url,
+                headers=headers,
+                timeout=30
             )
 
-    return detected
+        st.write("### 1. AMP4 Connection")
 
-
-# =========================================================
-# DETECT STATUS
-# =========================================================
-
-def detect_status(html):
-
-    text = html.lower()
-
-    status_words = {
-
-        "failed":
-            [
-                "conversion failed",
-                "failed",
-                "error"
-            ],
-
-        "processing":
-            [
-                "downloading",
-                "processing",
-                "converting",
-                "conversion"
-            ],
-
-        "finished":
-            [
-                "conversion finished",
-                "completed",
-                "download"
-            ]
-    }
-
-    result = []
-
-    for status, words in status_words.items():
-
-        for word in words:
-
-            if word in text:
-
-                result.append(
-                    status
-                )
-
-                break
-
-    return list(
-        dict.fromkeys(result)
-    )
-
-
-# =========================================================
-# SUBMIT FORM
-# =========================================================
-
-def submit_amp4_form(
-    session,
-    page_url,
-    form,
-    youtube_url
-):
-
-    action = urljoin(
-        page_url,
-        form.get(
-            "action",
-            "/"
-        )
-    )
-
-    method = (
-        form.get(
-            "method",
-            "GET"
-        )
-        .upper()
-    )
-
-    field_name = find_youtube_field(
-        form
-    )
-
-    if not field_name:
-
-        return None, None, (
-            "Could not identify the "
-            "YouTube URL field."
+        st.success(
+            f"HTTP {response.status_code} — {response.url}"
         )
 
-    # -----------------------------------------
-    # Collect normal fields
-    # -----------------------------------------
+        html = response.text
+        html_lower = html.lower()
 
-    data = {}
+        # =====================================================
+        # SECURITY / CAPTCHA CHECK
+        # =====================================================
 
-    for field in form.get(
-        "fields",
-        []
-    ):
-
-        name = field[
-            "name"
+        security_words = [
+            "captcha",
+            "recaptcha",
+            "hcaptcha",
+            "cloudflare",
+            "challenge-platform",
+            "turnstile"
         ]
 
-        value = field.get(
-            "value",
-            ""
-        )
+        security_found = [
+            word
+            for word in security_words
+            if word in html_lower
+        ]
 
-        # Keep hidden/default values
-        if value:
+        if security_found:
 
-            data[name] = value
-
-    # -----------------------------------------
-    # Put YouTube URL
-    # -----------------------------------------
-
-    data[field_name] = youtube_url
-
-    headers = get_headers()
-
-    headers[
-        "Origin"
-    ] = "https://amp4.cc"
-
-    headers[
-        "Referer"
-    ] = page_url
-
-    # -----------------------------------------
-    # Submit
-    # -----------------------------------------
-
-    if method == "POST":
-
-        response = session.post(
-            action,
-            data=data,
-            headers=headers,
-            timeout=60,
-            allow_redirects=True
-        )
-
-    else:
-
-        response = session.get(
-            action,
-            params=data,
-            headers=headers,
-            timeout=60,
-            allow_redirects=True
-        )
-
-    return (
-        response,
-        field_name,
-        None
-    )
-
-
-# =========================================================
-# MAIN BUTTON
-# =========================================================
-
-cookies_file = st.file_uploader(
-    "Upload AMP4 cookies.txt",
-    type=[
-        "txt",
-        "cookies"
-    ]
-)
-
-youtube_url = st.text_input(
-    "YouTube URL",
-    placeholder=(
-        "https://www.youtube.com/watch?v=..."
-    )
-)
-
-
-if st.button(
-    "🚀 Start Full AMP4 Test",
-    type="primary"
-):
-
-    # -----------------------------------------
-    # Validate
-    # -----------------------------------------
-
-    if not cookies_file:
-
-        st.error(
-            "Please upload AMP4 cookies.txt"
-        )
-
-        st.stop()
-
-    if not youtube_url.strip():
-
-        st.error(
-            "Please enter YouTube URL"
-        )
-
-        st.stop()
-
-    # -----------------------------------------
-    # Load cookies
-    # -----------------------------------------
-
-    try:
-
-        session, cookie_count = (
-            load_amp4_cookies(
-                cookies_file
+            st.warning(
+                "Security/CAPTCHA indicators found: "
+                + ", ".join(security_found)
             )
+
+        else:
+
+            st.success(
+                "No obvious CAPTCHA/security keyword found "
+                "in initial HTML."
+            )
+
+        # =====================================================
+        # 2. FIND JAVASCRIPT FILES
+        # =====================================================
+
+        script_urls = []
+
+        script_pattern = (
+            r"""<script\b[^>]*\bsrc=["']([^"']+)["']"""
         )
 
-    except Exception as e:
-
-        st.error(
-            f"Cookie loading error: {e}"
+        matches = re.findall(
+            script_pattern,
+            html,
+            re.IGNORECASE
         )
 
-        st.stop()
+        for src in matches:
 
-    st.success(
-        f"AMP4 cookies loaded: {cookie_count}"
-    )
+            full_url = urljoin(
+                response.url,
+                src
+            )
 
-    # -----------------------------------------
-    # STEP 1
-    # -----------------------------------------
+            if full_url not in script_urls:
 
-    st.write(
-        "## 1️⃣ Opening AMP4"
-    )
+                script_urls.append(full_url)
 
-    try:
+        st.write("### 2. JavaScript Files")
 
-        with st.spinner(
-            "Connecting..."
+        st.write(
+            f"Found **{len(script_urls)}** external JavaScript files."
+        )
+
+        for script_url in script_urls[:max_scripts]:
+
+            st.code(script_url)
+
+        # =====================================================
+        # DOWNLOAD JS FILES
+        # =====================================================
+
+        sources = [
+            ("AMP4 HTML", html)
+        ]
+
+        progress = st.progress(0)
+
+        scripts_to_check = script_urls[:max_scripts]
+
+        for index, script_url in enumerate(
+            scripts_to_check
         ):
 
-            page = get_amp4(
-                session
+            try:
+
+                js_response = session.get(
+                    script_url,
+                    headers=headers,
+                    timeout=20
+                )
+
+                if js_response.ok:
+
+                    sources.append(
+                        (
+                            script_url,
+                            js_response.text
+                        )
+                    )
+
+            except Exception:
+
+                pass
+
+            progress.progress(
+                int(
+                    (index + 1)
+                    * 100
+                    / max(
+                        1,
+                        len(scripts_to_check)
+                    )
+                )
             )
 
-    except Exception as e:
+        # =====================================================
+        # 3. POSSIBLE API ENDPOINTS
+        # =====================================================
 
-        st.error(
-            f"AMP4 connection failed: {e}"
-        )
+        endpoint_patterns = [
 
-        st.stop()
+            r"""["'`]((?:https?:)?//[^"'`\s]+/[^"'`\s]*)["'`]""",
 
-    if page.status_code == 200:
+            r"""["'`]((?:/|\./|\.\./)(?:api|ajax|convert|download|process|youtube|video|task|job|status|result|file)[^"'`\\\s]*)["'`]"""
+        ]
 
-        st.success(
-            "AMP4 HTTP connection: ✅"
-        )
+        request_patterns = [
 
-    else:
+            r"""fetch\s*\(\s*["'`]([^"'`]+)""",
 
-        st.warning(
-            f"AMP4 HTTP status: "
-            f"{page.status_code}"
-        )
+            r"""axios\.(?:get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)""",
 
-    st.write(
-        "Page:",
-        page.url
-    )
+            r"""\.open\s*\(\s*["'](?:GET|POST|PUT|PATCH|DELETE)["']\s*,\s*["'`]([^"'`]+)"""
+        ]
 
-    # -----------------------------------------
-    # STEP 2
-    # -----------------------------------------
+        possible_endpoints = set()
 
-    st.write(
-        "## 2️⃣ Checking AMP4"
-    )
+        javascript_requests = []
 
-    html = page.text
+        for source_name, source_text in sources:
 
-    parser = AMP4Parser()
+            # ---------------------------------------------
+            # Endpoint search
+            # ---------------------------------------------
 
-    parser.feed(
-        html
-    )
+            for pattern in endpoint_patterns:
 
-    st.success(
-        f"Forms found: "
-        f"{len(parser.forms)}"
-    )
+                try:
 
-    # -----------------------------------------
-    # CAPTCHA
-    # -----------------------------------------
+                    found_items = re.findall(
+                        pattern,
+                        source_text,
+                        re.IGNORECASE
+                    )
 
-    anti_bot = detect_antibot(
-        html
-    )
+                except Exception:
 
-    if anti_bot:
+                    found_items = []
 
-        st.warning(
-            "AMP4 anti-bot/CAPTCHA indicators found:"
-        )
+                for item in found_items:
+
+                    if (
+                        "amp4.cc" in item.lower()
+                        or item.startswith("/")
+                        or item.startswith("./")
+                        or item.startswith("../")
+                    ):
+
+                        possible_endpoints.add(
+                            (
+                                source_name,
+                                item[:500]
+                            )
+                        )
+
+            # ---------------------------------------------
+            # fetch / axios / XHR search
+            # ---------------------------------------------
+
+            for pattern in request_patterns:
+
+                try:
+
+                    found_requests = re.findall(
+                        pattern,
+                        source_text,
+                        re.IGNORECASE
+                    )
+
+                except Exception:
+
+                    found_requests = []
+
+                for item in found_requests:
+
+                    javascript_requests.append(
+                        (
+                            source_name,
+                            item[:500]
+                        )
+                    )
+
+        # =====================================================
+        # SHOW ENDPOINTS
+        # =====================================================
 
         st.write(
-            ", ".join(
-                anti_bot
-            )
+            "### 3. Possible API / Conversion References"
         )
 
-        st.info(
-            "This test will not bypass "
-            "CAPTCHA or anti-bot protection."
-        )
+        if possible_endpoints:
 
-    # -----------------------------------------
-    # STEP 3
-    # -----------------------------------------
+            rows = []
 
-    st.write(
-        "## 3️⃣ Detecting YouTube form"
-    )
+            for source_name, endpoint in sorted(
+                possible_endpoints
+            ):
 
-    selected_form = None
+                rows.append(
+                    {
+                        "Source": source_name[:100],
 
-    selected_field = None
+                        "Reference": endpoint,
 
-    for form in parser.forms:
+                        "Resolved URL": urljoin(
+                            page_url,
+                            endpoint
+                        )
+                    }
+                )
 
-        field = find_youtube_field(
-            form
-        )
-
-        if field:
-
-            selected_form = form
-
-            selected_field = field
-
-            break
-
-    if not selected_form:
-
-        st.error(
-            "❌ YouTube URL form could not "
-            "be identified."
-        )
-
-        st.info(
-            "AMP4 may be using a JavaScript-only "
-            "request instead of a normal HTML form."
-        )
-
-        st.stop()
-
-    st.success(
-        f"YouTube field detected: "
-        f"{selected_field}"
-    )
-
-    st.write(
-        "Form method:",
-        selected_form.get(
-            "method"
-        )
-    )
-
-    st.write(
-        "Form action:",
-        urljoin(
-            page.url,
-            selected_form.get(
-                "action",
-                "/"
-            )
-        )
-    )
-
-    # -----------------------------------------
-    # STEP 4
-    # -----------------------------------------
-
-    st.write(
-        "## 4️⃣ Sending YouTube URL"
-    )
-
-    st.code(
-        youtube_url
-    )
-
-    try:
-
-        with st.spinner(
-            "Sending normal AMP4 conversion request..."
-        ):
-
-            result = submit_amp4_form(
-                session,
-                page.url,
-                selected_form,
-                youtube_url.strip()
+            st.dataframe(
+                rows,
+                use_container_width=True,
+                hide_index=True
             )
 
-    except Exception as e:
+        else:
 
-        st.error(
-            f"Request failed: {e}"
-        )
+            st.info(
+                "No obvious endpoint reference found "
+                "in the inspected HTML/JS."
+            )
 
-        st.stop()
-
-    response = result[0]
-
-    if response is None:
-
-        st.error(
-            result[2]
-        )
-
-        st.stop()
-
-    # -----------------------------------------
-    # STEP 5
-    # -----------------------------------------
-
-    st.write(
-        "## 5️⃣ AMP4 Response"
-    )
-
-    st.write(
-        "HTTP status:",
-        response.status_code
-    )
-
-    st.write(
-        "Final URL:",
-        response.url
-    )
-
-    if response.status_code >= 200 and response.status_code < 400:
-
-        st.success(
-            "AMP4 request accepted at HTTP level."
-        )
-
-    else:
-
-        st.error(
-            f"AMP4 returned HTTP "
-            f"{response.status_code}"
-        )
-
-    response_html = response.text
-
-    # -----------------------------------------
-    # CAPTCHA RESPONSE
-    # -----------------------------------------
-
-    response_antibot = detect_antibot(
-        response_html
-    )
-
-    if response_antibot:
-
-        st.warning(
-            "AMP4 returned anti-bot/CAPTCHA content:"
-        )
+        # =====================================================
+        # 4. JAVASCRIPT REQUESTS
+        # =====================================================
 
         st.write(
-            ", ".join(
-                response_antibot
+            "### 4. JavaScript Request Calls"
+        )
+
+        unique_requests = list(
+            dict.fromkeys(
+                javascript_requests
             )
         )
 
-        st.stop()
+        if unique_requests:
 
-    # -----------------------------------------
-    # STATUS
-    # -----------------------------------------
+            rows = []
 
-    statuses = detect_status(
-        response_html
-    )
+            for source_name, request_target in unique_requests[:200]:
 
-    if statuses:
+                rows.append(
+                    {
+                        "Source": source_name[:100],
+
+                        "Request Target": request_target
+                    }
+                )
+
+            st.dataframe(
+                rows,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+
+            st.info(
+                "No obvious fetch/axios/XHR target found."
+            )
+
+        # =====================================================
+        # 5. CONVERSION KEYWORDS
+        # =====================================================
 
         st.write(
-            "Detected status:",
-            ", ".join(
-                statuses
-            )
+            "### 5. Conversion-Related Keywords"
         )
 
-    # -----------------------------------------
-    # DOWNLOAD LINKS
-    # -----------------------------------------
+        keywords = [
+            "youtube",
+            "convert",
+            "download",
+            "format",
+            "quality",
+            "video",
+            "mp4",
+            "webm",
+            "trim",
+            "captcha",
+            "token",
+            "api",
+            "ajax",
+            "status",
+            "result",
+            "job",
+            "task"
+        ]
 
-    st.write(
-        "## 6️⃣ Searching for download result"
-    )
+        keyword_rows = []
 
-    download_links = find_download_links(
-        response_html,
-        response.url
-    )
+        for source_name, source_text in sources:
 
-    if download_links:
+            source_lower = source_text.lower()
+
+            found_keywords = [
+                keyword
+                for keyword in keywords
+                if keyword in source_lower
+            ]
+
+            if found_keywords:
+
+                keyword_rows.append(
+                    {
+                        "Source": source_name[:100],
+
+                        "Keywords": ", ".join(
+                            found_keywords
+                        )
+                    }
+                )
+
+        if keyword_rows:
+
+            st.dataframe(
+                keyword_rows,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        # =====================================================
+        # FINAL RESULT
+        # =====================================================
+
+        st.write("### 6. Result")
 
         st.success(
-            f"Possible download links found: "
-            f"{len(download_links)}"
+            "✅ AMP4 JavaScript diagnostic complete."
         )
 
-        for i, link in enumerate(
-            download_links[:20],
-            1
-        ):
-
-            st.write(
-                f"### Download {i}"
-            )
-
-            st.code(
-                link
-            )
-
-            st.markdown(
-                f"[Open download link]({link})"
-            )
-
-    else:
+        st.info(
+            "Agar conversion/API endpoint milta hai, "
+            "hum us public request ko study karke "
+            "normal API integration bana sakte hain."
+        )
 
         st.warning(
-            "❌ No direct download link found "
-            "in the HTTP response."
+            "⚠️ Ye tool CAPTCHA, anti-bot protection, "
+            "login controls ya access restrictions bypass nahi karta."
         )
 
-    # -----------------------------------------
-    # RESULT
-    # -----------------------------------------
+    except requests.RequestException as error:
 
-    st.write(
-        "## 7️⃣ Final Test Result"
-    )
-
-    if download_links:
-
-        st.success(
-            "🎉 AMP4 conversion/download URL "
-            "was detected!"
+        st.error(
+            f"❌ Network error: {error}"
         )
 
-        st.info(
-            "The next step can be integrating "
-            "this successful request into your "
-            "main Shorts application."
-        )
+    except Exception as error:
 
-    elif (
-        "conversion" in response_html.lower()
-        or "downloading" in response_html.lower()
-        or "processing" in response_html.lower()
-    ):
-
-        st.info(
-            "AMP4 accepted/started a conversion "
-            "flow, but the final download URL "
-            "was not present in this response."
-        )
-
-        st.info(
-            "This likely means the conversion "
-            "is handled asynchronously by JavaScript."
-        )
-
-    else:
-
-        st.warning(
-            "AMP4 did not expose a direct "
-            "download result through this normal "
-            "HTTP request."
-        )
-
-        st.write(
-            "This does NOT prove AMP4 cannot "
-            "download the video. It means the "
-            "website likely needs its JavaScript "
-            "conversion flow or an official API."
+        st.error(
+            f"❌ Unexpected error: "
+            f"{type(error).__name__}: {error}"
         )
