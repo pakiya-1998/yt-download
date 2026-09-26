@@ -13,32 +13,14 @@ import time
 import tarfile
 import platform
 import urllib.request
-import sys
-
-# Streamlit Cloud safety net: if requirements.txt was not applied to the
-# current build, install the downloader package before importing it.
-def _ensure_yt_dlp():
-    try:
-        import yt_dlp as _yt_dlp
-        return _yt_dlp
-    except ModuleNotFoundError:
-        import subprocess as _sp
-        _sp.run(
-            [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-             "--no-cache-dir", "yt-dlp==2026.8.19"],
-            check=True,
-        )
-        import yt_dlp as _yt_dlp
-        return _yt_dlp
-
-yt_dlp = _ensure_yt_dlp()
-
 from pathlib import Path
 from datetime import datetime, date, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
+import yt_dlp
+
 try:
     import curl_cffi
 except Exception:
@@ -1288,18 +1270,77 @@ def download_youtube_source(url, output_path, cookies_path="", progress_callback
 # ============================================================
 
 def get_google_client_config():
-    if "google_oauth" not in st.secrets:
+    """Load Google OAuth config from Streamlit, Render Secret Files, or env vars.
+
+    Render Secret Files cannot use a leading dot/path as their filename, so the
+    recommended Render filename is simply ``secrets.toml``. Render exposes that
+    file at /etc/secrets/secrets.toml and at the service root. Streamlit itself
+    expects .streamlit/secrets.toml, so this function reads the Render locations
+    directly instead of requiring a startup copy.
+    """
+    cfg = None
+
+    # 1) Normal Streamlit project secrets.
+    try:
+        if "google_oauth" in st.secrets:
+            cfg = dict(st.secrets["google_oauth"])
+    except Exception:
+        cfg = None
+
+    # 2) Render Secret File.
+    if not cfg:
+        try:
+            import tomllib
+
+            for secret_path in (
+                "/etc/secrets/secrets.toml",
+                os.path.join(os.getcwd(), "secrets.toml"),
+                os.path.join(os.getcwd(), ".streamlit", "secrets.toml"),
+            ):
+                if os.path.isfile(secret_path):
+                    with open(secret_path, "rb") as secret_file:
+                        data = tomllib.load(secret_file)
+                    if isinstance(data.get("google_oauth"), dict):
+                        cfg = dict(data["google_oauth"])
+                        break
+        except Exception:
+            cfg = None
+
+    # 3) Environment-variable fallback. Useful for Render Environment vars
+    # and local deployments where a TOML secret file is not available.
+    if not cfg:
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+        redirect_uri = os.environ.get(
+            "GOOGLE_REDIRECT_URI",
+            "https://yt-download-j1m4.onrender.com/"
+        ).strip()
+        if client_id and client_secret and redirect_uri:
+            cfg = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+            }
+
+    if not cfg:
         return None
 
-    cfg = st.secrets["google_oauth"]
+    client_id = str(cfg.get("client_id", "")).strip()
+    client_secret = str(cfg.get("client_secret", "")).strip()
+    redirect_uri = str(
+        cfg.get("redirect_uri", "https://yt-download-j1m4.onrender.com/")
+    ).strip()
+
+    if not client_id or not client_secret or not redirect_uri:
+        return None
 
     return {
         "web": {
-            "client_id": cfg["client_id"],
-            "client_secret": cfg["client_secret"],
+            "client_id": client_id,
+            "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [cfg["redirect_uri"]]
+            "redirect_uris": [redirect_uri]
         }
     }
 
